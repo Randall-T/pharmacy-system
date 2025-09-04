@@ -1,9 +1,8 @@
 const express = require("express");
 const cors = require("cors");
-const sqlite3 = require("sqlite3").verbose();
+const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,21 +13,144 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "https://pharmacy-front-x0mmfo7cy-randalls-projects-49978e87.vercel.app/",
+      process.env.FRONTEND_URL || "https://pharmacy-system-jade.vercel.app/",
     ],
     credentials: true,
   })
 );
 app.use(express.json());
 
-// Database connection
-const db = new sqlite3.Database("./pharmacy.db", (err) => {
+// Database (PostgreSQL) connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? { rejectUnauthorized: false }
+      : false,
+});
+
+// Test database connection
+pool.connect((err, client, release) => {
   if (err) {
-    console.error("Error opening database:", err);
+    console.error("Error connecting to PostgreSQL:", err);
   } else {
-    console.log("Connected to SQLite database");
+    console.log("Connected to PostgreSQL database");
+    release();
   }
 });
+
+// Initialize database tables
+const initDatabase = async () => {
+  try {
+    // Users table
+    await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL CHECK (role IN ('manager', 'salesperson')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Products table
+    await pool.query(`
+            CREATE TABLE IF NOT EXISTS products (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                category VARCHAR(255) NOT NULL,
+                current_stock INTEGER NOT NULL DEFAULT 0,
+                reorder_point INTEGER NOT NULL DEFAULT 0,
+                max_stock INTEGER NOT NULL DEFAULT 100,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                supplier VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Sales table
+    await pool.query(`
+            CREATE TABLE IF NOT EXISTS sales (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                quantity INTEGER NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                total DECIMAL(10, 2) NOT NULL,
+                salesperson_id INTEGER NOT NULL REFERENCES users(id),
+                sale_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Purchases table
+    await pool.query(`
+            CREATE TABLE IF NOT EXISTS purchases (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                quantity INTEGER NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                total DECIMAL(10, 2) NOT NULL,
+                purchase_date DATE NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'cancelled')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Orders table
+    await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                quantity INTEGER NOT NULL,
+                unit_price DECIMAL(10, 2) NOT NULL,
+                total DECIMAL(10, 2) NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'cancelled')),
+                order_date DATE NOT NULL,
+                supplier VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Insert default users if they don't exist
+    const userCheck = await pool.query("SELECT COUNT(*) FROM users");
+    if (parseInt(userCheck.rows[0].count) === 0) {
+      const hashedPassword1 = await bcrypt.hash("admin123", 10);
+      const hashedPassword2 = await bcrypt.hash("sales123", 10);
+
+      await pool.query(
+        `
+                INSERT INTO users (name, email, password, role) VALUES 
+                ('Admin User', 'admin@pharmacy.com', $1, 'manager'),
+                ('Sales Person', 'sales@pharmacy.com', $2, 'salesperson')
+            `,
+        [hashedPassword1, hashedPassword2]
+      );
+    }
+
+    // Insert sample products if they don't exist
+    const productCheck = await pool.query("SELECT COUNT(*) FROM products");
+    if (parseInt(productCheck.rows[0].count) === 0) {
+      await pool.query(`
+                INSERT INTO products (name, category, current_stock, reorder_point, max_stock, unit_price, supplier) VALUES 
+                ('Paracetamol 500mg', 'Pain Relief', 50, 20, 200, 2.50, 'MedCorp'),
+                ('Amoxicillin 250mg', 'Antibiotics', 15, 25, 150, 5.00, 'PharmSupply'),
+                ('Ibuprofen 400mg', 'Pain Relief', 80, 30, 200, 3.25, 'MedCorp'),
+                ('Aspirin 75mg', 'Pain Relief', 100, 25, 300, 1.75, 'MedCorp'),
+                ('Cough Syrup 100ml', 'Cold & Flu', 40, 15, 100, 8.50, 'PharmSupply')
+            `);
+    }
+
+    console.log("Database initialized successfully");
+  } catch (error) {
+    console.error("Error initializing database:", error);
+  }
+};
+
+// Initialize database on startup
+initDatabase();
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -63,82 +185,84 @@ app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    db.get(
-      "SELECT * FROM users WHERE email = ?",
-      [email],
-      async (err, user) => {
-        if (err) {
-          return res.status(500).json({ error: "Database error" });
-        }
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [
+      email,
+    ]);
 
-        if (!user) {
-          return res.status(401).json({ error: "Invalid credentials" });
-        }
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
-        // For demo purposes, check plain text password
-        // In production, use bcrypt to compare hashed passwords
-        const validPassword =
-          password === "admin123" || password === "sales123";
+    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password);
 
-        if (!validPassword) {
-          return res.status(401).json({ error: "Invalid credentials" });
-        }
+    if (!validPassword) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
-        const token = jwt.sign(
-          { id: user.id, email: user.email, role: user.role },
-          JWT_SECRET,
-          { expiresIn: "24h" }
-        );
-
-        res.json({
-          token,
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-          },
-        });
-      }
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "24h" }
     );
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
   } catch (error) {
+    console.error("Login error:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
 // USER ROUTES
-app.get("/api/users", authenticateToken, requireRole("manager"), (req, res) => {
-  db.all(
-    "SELECT id, name, email, role, created_at FROM users",
-    (err, users) => {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
-      res.json(users);
+app.get(
+  "/api/users",
+  authenticateToken,
+  requireRole("manager"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        "SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC"
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ error: "Database error" });
     }
-  );
-});
+  }
+);
 
 app.post(
   "/api/users",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const { name, email, password, role } = req.body;
 
-    db.run(
-      "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
-      [name, email, password, role],
-      function (err) {
-        if (err) {
-          if (err.code === "SQLITE_CONSTRAINT") {
-            return res.status(400).json({ error: "Email already exists" });
-          }
-          return res.status(500).json({ error: "Database error" });
-        }
-        res.json({ id: this.lastID, message: "User created successfully" });
+    try {
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const result = await pool.query(
+        "INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id",
+        [name, email, hashedPassword, role]
+      );
+
+      res.json({ id: result.rows[0].id, message: "User created successfully" });
+    } catch (error) {
+      if (error.code === "23505") {
+        // Unique constraint violation
+        return res.status(400).json({ error: "Email already exists" });
       }
-    );
+      console.error("Error creating user:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
@@ -146,27 +270,28 @@ app.put(
   "/api/users/:id",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const { name, email, role, password } = req.body;
     const { id } = req.params;
 
-    let query = "UPDATE users SET name = ?, email = ?, role = ?";
-    let params = [name, email, role];
+    try {
+      let query =
+        "UPDATE users SET name = $1, email = $2, role = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4";
+      let params = [name, email, role, id];
 
-    if (password) {
-      query += ", password = ?";
-      params.push(password);
-    }
-
-    query += " WHERE id = ?";
-    params.push(id);
-
-    db.run(query, params, function (err) {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
+      if (password) {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        query =
+          "UPDATE users SET name = $1, email = $2, role = $3, password = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5";
+        params = [name, email, role, hashedPassword, id];
       }
+
+      await pool.query(query, params);
       res.json({ message: "User updated successfully" });
-    });
+    } catch (error) {
+      console.error("Error updating user:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
@@ -174,33 +299,35 @@ app.delete(
   "/api/users/:id",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const { id } = req.params;
 
-    db.run("DELETE FROM users WHERE id = ?", [id], function (err) {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
+    try {
+      await pool.query("DELETE FROM users WHERE id = $1", [id]);
       res.json({ message: "User deleted successfully" });
-    });
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
 // PRODUCT ROUTES
-app.get("/api/products", authenticateToken, (req, res) => {
-  db.all("SELECT * FROM products ORDER BY name", (err, products) => {
-    if (err) {
-      return res.status(500).json({ error: "Database error" });
-    }
-    res.json(products);
-  });
+app.get("/api/products", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM products ORDER BY name");
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching products:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 app.post(
   "/api/products",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const {
       name,
       category,
@@ -211,24 +338,28 @@ app.post(
       supplier,
     } = req.body;
 
-    db.run(
-      "INSERT INTO products (name, category, current_stock, reorder_point, max_stock, unit_price, supplier) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [
-        name,
-        category,
-        current_stock,
-        reorder_point,
-        max_stock,
-        unit_price,
-        supplier,
-      ],
-      function (err) {
-        if (err) {
-          return res.status(500).json({ error: "Database error" });
-        }
-        res.json({ id: this.lastID, message: "Product created successfully" });
-      }
-    );
+    try {
+      const result = await pool.query(
+        "INSERT INTO products (name, category, current_stock, reorder_point, max_stock, unit_price, supplier) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        [
+          name,
+          category,
+          current_stock,
+          reorder_point,
+          max_stock,
+          unit_price,
+          supplier,
+        ]
+      );
+
+      res.json({
+        id: result.rows[0].id,
+        message: "Product created successfully",
+      });
+    } catch (error) {
+      console.error("Error creating product:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
@@ -236,7 +367,7 @@ app.put(
   "/api/products/:id",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const {
       name,
       category,
@@ -248,25 +379,26 @@ app.put(
     } = req.body;
     const { id } = req.params;
 
-    db.run(
-      "UPDATE products SET name = ?, category = ?, current_stock = ?, reorder_point = ?, max_stock = ?, unit_price = ?, supplier = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [
-        name,
-        category,
-        current_stock,
-        reorder_point,
-        max_stock,
-        unit_price,
-        supplier,
-        id,
-      ],
-      function (err) {
-        if (err) {
-          return res.status(500).json({ error: "Database error" });
-        }
-        res.json({ message: "Product updated successfully" });
-      }
-    );
+    try {
+      await pool.query(
+        "UPDATE products SET name = $1, category = $2, current_stock = $3, reorder_point = $4, max_stock = $5, unit_price = $6, supplier = $7, updated_at = CURRENT_TIMESTAMP WHERE id = $8",
+        [
+          name,
+          category,
+          current_stock,
+          reorder_point,
+          max_stock,
+          unit_price,
+          supplier,
+          id,
+        ]
+      );
+
+      res.json({ message: "Product updated successfully" });
+    } catch (error) {
+      console.error("Error updating product:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
@@ -274,256 +406,142 @@ app.delete(
   "/api/products/:id",
   authenticateToken,
   requireRole("manager"),
-  (req, res) => {
+  async (req, res) => {
     const { id } = req.params;
 
-    db.run("DELETE FROM products WHERE id = ?", [id], function (err) {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
+    try {
+      await pool.query("DELETE FROM products WHERE id = $1", [id]);
       res.json({ message: "Product deleted successfully" });
-    });
+    } catch (error) {
+      console.error("Error deleting product:", error);
+      res.status(500).json({ error: "Database error" });
+    }
   }
 );
 
 // SALES ROUTES
-app.get("/api/sales", authenticateToken, (req, res) => {
-  const query = `
-        SELECT s.*, p.name as product_name, u.name as salesperson_name 
-        FROM sales s 
-        JOIN products p ON s.product_id = p.id 
-        JOIN users u ON s.salesperson_id = u.id 
-        ORDER BY s.sale_date DESC
-    `;
+app.get("/api/sales", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+            SELECT s.*, p.name as product_name, u.name as salesperson_name 
+            FROM sales s 
+            JOIN products p ON s.product_id = p.id 
+            JOIN users u ON s.salesperson_id = u.id 
+            ORDER BY s.sale_date DESC
+        `);
 
-  db.all(query, (err, sales) => {
-    if (err) {
-      return res.status(500).json({ error: "Database error" });
-    }
-    res.json(sales);
-  });
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching sales:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
-app.post("/api/sales", authenticateToken, (req, res) => {
+app.post("/api/sales", authenticateToken, async (req, res) => {
   const { product_id, quantity, unit_price } = req.body;
   const total = quantity * unit_price;
   const salesperson_id = req.user.id;
   const sale_date = new Date().toISOString().split("T")[0];
 
-  // Check if product has enough stock
-  db.get(
-    "SELECT current_stock FROM products WHERE id = ?",
-    [product_id],
-    (err, product) => {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
+  const client = await pool.connect();
 
-      if (!product) {
-        return res.status(404).json({ error: "Product not found" });
-      }
+  try {
+    await client.query("BEGIN");
 
-      if (product.current_stock < quantity) {
-        return res.status(400).json({ error: "Insufficient stock" });
-      }
+    // Check if product has enough stock
+    const productResult = await client.query(
+      "SELECT current_stock FROM products WHERE id = $1",
+      [product_id]
+    );
 
-      // Begin transaction
-      db.serialize(() => {
-        // Insert sale
-        db.run(
-          "INSERT INTO sales (product_id, quantity, unit_price, total, salesperson_id, sale_date) VALUES (?, ?, ?, ?, ?, ?)",
-          [product_id, quantity, unit_price, total, salesperson_id, sale_date],
-          function (err) {
-            if (err) {
-              return res.status(500).json({ error: "Error recording sale" });
-            }
-
-            // Update product stock
-            db.run(
-              "UPDATE products SET current_stock = current_stock - ? WHERE id = ?",
-              [quantity, product_id],
-              function (err) {
-                if (err) {
-                  return res
-                    .status(500)
-                    .json({ error: "Error updating stock" });
-                }
-                res.json({
-                  id: this.lastID,
-                  message: "Sale recorded successfully",
-                });
-              }
-            );
-          }
-        );
-      });
+    if (productResult.rows.length === 0) {
+      throw new Error("Product not found");
     }
-  );
-});
 
-// PURCHASE ROUTES
-app.get(
-  "/api/purchases",
-  authenticateToken,
-  requireRole("manager"),
-  (req, res) => {
-    const query = `
-        SELECT p.*, pr.name as product_name 
-        FROM purchases p 
-        JOIN products pr ON p.product_id = pr.id 
-        ORDER BY p.purchase_date DESC
-    `;
+    const product = productResult.rows[0];
+    if (product.current_stock < quantity) {
+      throw new Error("Insufficient stock");
+    }
 
-    db.all(query, (err, purchases) => {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
-      res.json(purchases);
-    });
+    // Insert sale
+    await client.query(
+      "INSERT INTO sales (product_id, quantity, unit_price, total, salesperson_id, sale_date) VALUES ($1, $2, $3, $4, $5, $6)",
+      [product_id, quantity, unit_price, total, salesperson_id, sale_date]
+    );
+
+    // Update product stock
+    await client.query(
+      "UPDATE products SET current_stock = current_stock - $1 WHERE id = $2",
+      [quantity, product_id]
+    );
+
+    await client.query("COMMIT");
+    res.json({ message: "Sale recorded successfully" });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error recording sale:", error);
+    res.status(400).json({ error: error.message });
+  } finally {
+    client.release();
   }
-);
-
-app.post(
-  "/api/purchases",
-  authenticateToken,
-  requireRole("manager"),
-  (req, res) => {
-    const { product_id, quantity, unit_price, status } = req.body;
-    const total = quantity * unit_price;
-    const purchase_date = new Date().toISOString().split("T")[0];
-
-    db.serialize(() => {
-      // Insert purchase
-      db.run(
-        "INSERT INTO purchases (product_id, quantity, unit_price, total, purchase_date, status) VALUES (?, ?, ?, ?, ?, ?)",
-        [product_id, quantity, unit_price, total, purchase_date, status],
-        function (err) {
-          if (err) {
-            return res.status(500).json({ error: "Error recording purchase" });
-          }
-
-          // If purchase is completed, update stock
-          if (status === "completed") {
-            db.run(
-              "UPDATE products SET current_stock = current_stock + ? WHERE id = ?",
-              [quantity, product_id],
-              function (err) {
-                if (err) {
-                  return res
-                    .status(500)
-                    .json({ error: "Error updating stock" });
-                }
-                res.json({
-                  id: this.lastID,
-                  message: "Purchase recorded successfully",
-                });
-              }
-            );
-          } else {
-            res.json({
-              id: this.lastID,
-              message: "Purchase recorded successfully",
-            });
-          }
-        }
-      );
-    });
-  }
-);
-
-// ORDER ROUTES
-app.get("/api/orders", authenticateToken, (req, res) => {
-  const query = `
-        SELECT o.*, p.name as product_name 
-        FROM orders o 
-        JOIN products p ON o.product_id = p.id 
-        ORDER BY o.order_date DESC
-    `;
-
-  db.all(query, (err, orders) => {
-    if (err) {
-      return res.status(500).json({ error: "Database error" });
-    }
-    res.json(orders);
-  });
-});
-
-app.post("/api/orders", authenticateToken, (req, res) => {
-  const { product_id, quantity, unit_price, supplier } = req.body;
-  const total = quantity * unit_price;
-  const order_date = new Date().toISOString().split("T")[0];
-
-  db.run(
-    "INSERT INTO orders (product_id, quantity, unit_price, total, order_date, supplier) VALUES (?, ?, ?, ?, ?, ?)",
-    [product_id, quantity, unit_price, total, order_date, supplier],
-    function (err) {
-      if (err) {
-        return res.status(500).json({ error: "Error creating order" });
-      }
-      res.json({ id: this.lastID, message: "Order created successfully" });
-    }
-  );
 });
 
 // DASHBOARD ROUTES
-app.get("/api/dashboard", authenticateToken, (req, res) => {
-  const dashboardData = {};
+app.get("/api/dashboard", authenticateToken, async (req, res) => {
+  try {
+    const totalProducts = await pool.query(
+      "SELECT COUNT(*) as total FROM products"
+    );
+    const lowStockItems = await pool.query(
+      "SELECT COUNT(*) as total FROM products WHERE current_stock <= reorder_point"
+    );
+    const pendingOrders = await pool.query(
+      "SELECT COUNT(*) as total FROM orders WHERE status = $1",
+      ["pending"]
+    );
+    const totalSales = await pool.query(
+      "SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= $1",
+      [
+        new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split("T")[0],
+      ]
+    );
 
-  db.serialize(() => {
-    // Get total products
-    db.get("SELECT COUNT(*) as total FROM products", (err, result) => {
-      if (err) return res.status(500).json({ error: "Database error" });
-      dashboardData.totalProducts = result.total;
+    res.json({
+      totalProducts: parseInt(totalProducts.rows[0].total),
+      lowStockItems: parseInt(lowStockItems.rows[0].total),
+      pendingOrders: parseInt(pendingOrders.rows[0].total),
+      totalSales: parseFloat(totalSales.rows[0].total),
     });
-
-    // Get low stock items
-    db.get(
-      "SELECT COUNT(*) as total FROM products WHERE current_stock <= reorder_point",
-      (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        dashboardData.lowStockItems = result.total;
-      }
-    );
-
-    // Get pending orders
-    db.get(
-      'SELECT COUNT(*) as total FROM orders WHERE status = "pending"',
-      (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        dashboardData.pendingOrders = result.total;
-      }
-    );
-
-    // Get total sales
-    db.get(
-      'SELECT SUM(total) as total FROM sales WHERE sale_date >= date("now", "-30 days")',
-      (err, result) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        dashboardData.totalSales = result.total || 0;
-
-        res.json(dashboardData);
-      }
-    );
-  });
+  } catch (error) {
+    console.error("Error fetching dashboard data:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 // Get reorder recommendations
-app.get("/api/reorder-recommendations", authenticateToken, (req, res) => {
-  db.all(
-    "SELECT * FROM products WHERE current_stock <= reorder_point",
-    (err, products) => {
-      if (err) {
-        return res.status(500).json({ error: "Database error" });
-      }
-      res.json(products);
-    }
-  );
+app.get("/api/reorder-recommendations", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM products WHERE current_stock <= reorder_point"
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching reorder recommendations:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: "Something went wrong!" });
+});
+
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({ status: "OK", message: "Pharmacy API is running" });
 });
 
 // Start server
