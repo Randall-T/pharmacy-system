@@ -14,6 +14,7 @@ import "./App.css";
 
 // Configure axios defaults
 axios.defaults.baseURL = "http://localhost:5000/api";
+("https://pharmacy-system-backend.onrender.com/api");
 
 const App = () => {
   const [user, setUser] = useState(null);
