@@ -141,7 +141,7 @@ const App = () => {
       setToken(newToken);
       setUser(userData);
       localStorage.setItem("token", newToken);
-      axios.defaults.headers.common["Authorization"] = "Bearer ${newToken}";
+      axios.defaults.headers.common["Authorization"] = `Bearer ${newToken}`;
 
       await loadInitialData();
       setCurrentView("dashboard");
