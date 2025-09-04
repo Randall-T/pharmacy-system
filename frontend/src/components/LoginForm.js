@@ -68,7 +68,7 @@ const LoginForm = ({ onLogin, loading, error }) => {
           </button>
         </form>
 
-        <div className="mt-6 p-4 bg-gray-50 rounded-md">
+        {/* <div className="mt-6 p-4 bg-gray-50 rounded-md">
           <p className="text-sm text-gray-600 mb-2"> Demo Credentials: </p>
           <p className="text-xs text-gray-500">
             {" "}
@@ -78,7 +78,7 @@ const LoginForm = ({ onLogin, loading, error }) => {
             {" "}
             Salesperson: sales @pharmacy.com / sales123{" "}
           </p>
-        </div>
+        </div> */}
       </div>
     </div>
   );

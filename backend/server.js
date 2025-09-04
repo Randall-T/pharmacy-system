@@ -1,20 +1,17 @@
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
-const bcrypt = require("bcryptjs");
+const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // CORS Configuration for production
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      process.env.FRONTEND_URL || "https://pharmacy-system-jade.vercel.app/",
-    ],
+    origin: ["http://localhost:3000", process.env.FRONTEND_URL],
     credentials: true,
   })
 );
@@ -38,119 +35,6 @@ pool.connect((err, client, release) => {
     release();
   }
 });
-
-// Initialize database tables
-const initDatabase = async () => {
-  try {
-    // Users table
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                role VARCHAR(50) NOT NULL CHECK (role IN ('manager', 'salesperson')),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-    // Products table
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS products (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                category VARCHAR(255) NOT NULL,
-                current_stock INTEGER NOT NULL DEFAULT 0,
-                reorder_point INTEGER NOT NULL DEFAULT 0,
-                max_stock INTEGER NOT NULL DEFAULT 100,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                supplier VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-    // Sales table
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS sales (
-                id SERIAL PRIMARY KEY,
-                product_id INTEGER NOT NULL REFERENCES products(id),
-                quantity INTEGER NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                total DECIMAL(10, 2) NOT NULL,
-                salesperson_id INTEGER NOT NULL REFERENCES users(id),
-                sale_date DATE NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-    // Purchases table
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS purchases (
-                id SERIAL PRIMARY KEY,
-                product_id INTEGER NOT NULL REFERENCES products(id),
-                quantity INTEGER NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                total DECIMAL(10, 2) NOT NULL,
-                purchase_date DATE NOT NULL,
-                status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'cancelled')),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-    // Orders table
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS orders (
-                id SERIAL PRIMARY KEY,
-                product_id INTEGER NOT NULL REFERENCES products(id),
-                quantity INTEGER NOT NULL,
-                unit_price DECIMAL(10, 2) NOT NULL,
-                total DECIMAL(10, 2) NOT NULL,
-                status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'cancelled')),
-                order_date DATE NOT NULL,
-                supplier VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-    // Insert default users if they don't exist
-    const userCheck = await pool.query("SELECT COUNT(*) FROM users");
-    if (parseInt(userCheck.rows[0].count) === 0) {
-      const hashedPassword1 = await bcrypt.hash("admin123", 10);
-      const hashedPassword2 = await bcrypt.hash("sales123", 10);
-
-      await pool.query(
-        `
-                INSERT INTO users (name, email, password, role) VALUES 
-                ('Admin User', 'admin@pharmacy.com', $1, 'manager'),
-                ('Sales Person', 'sales@pharmacy.com', $2, 'salesperson')
-            `,
-        [hashedPassword1, hashedPassword2]
-      );
-    }
-
-    // Insert sample products if they don't exist
-    const productCheck = await pool.query("SELECT COUNT(*) FROM products");
-    if (parseInt(productCheck.rows[0].count) === 0) {
-      await pool.query(`
-                INSERT INTO products (name, category, current_stock, reorder_point, max_stock, unit_price, supplier) VALUES 
-                ('Paracetamol 500mg', 'Pain Relief', 50, 20, 200, 2.50, 'MedCorp'),
-                ('Amoxicillin 250mg', 'Antibiotics', 15, 25, 150, 5.00, 'PharmSupply'),
-                ('Ibuprofen 400mg', 'Pain Relief', 80, 30, 200, 3.25, 'MedCorp'),
-                ('Aspirin 75mg', 'Pain Relief', 100, 25, 300, 1.75, 'MedCorp'),
-                ('Cough Syrup 100ml', 'Cold & Flu', 40, 15, 100, 8.50, 'PharmSupply')
-            `);
-    }
-
-    console.log("Database initialized successfully");
-  } catch (error) {
-    console.error("Error initializing database:", error);
-  }
-};
-
-// Initialize database on startup
-initDatabase();
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
@@ -547,4 +431,9 @@ app.get("/api/health", (req, res) => {
 // Start server
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+// Catch-All Route
+app.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found" });
 });

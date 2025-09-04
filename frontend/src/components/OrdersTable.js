@@ -9,8 +9,8 @@ const OrdersTable = ({ orders }) => {
       cancelled: "bg-red-100 text-red-800",
     };
 
-    return `$ { baseClasses }
-        $ { statusClasses[status] || statusClasses.pending }`;
+    return `${baseClasses}
+        ${statusClasses[status] || statusClasses.pending}`;
   };
 
   const formatCurrency = (amount) => {

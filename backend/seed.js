@@ -10,23 +10,38 @@ async function createDemoAccounts() {
     await client.connect();
     console.log("Connected to database!");
 
-    // Generate a secure hashed password for the demo account
-    const password = "admin123";
-    const saltRounds = 10; // A reasonable number for security vs. performance
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    // Define the demo users with plaintext passwords and roles
+    const demoUsers = [
+      {
+        name: "Admin User",
+        email: "admin@pharmacy.com",
+        password: "admin123",
+        role: "manager",
+      },
+      {
+        name: "Sales Person",
+        email: "sales@pharmacy.com",
+        password: "sales123",
+        role: "salesperson",
+      },
+    ];
 
-    const insertQuery = `
-      INSERT INTO users (username, email, password_hash)
-      VALUES
-      ('admin', 'admin@pharmacy.com', $1)
-      ON CONFLICT (username) DO NOTHING;
-    `;
+    // Use a loop to create each user
+    for (const user of demoUsers) {
+      const hashedPassword = await bcrypt.hash(user.password, 10);
 
-    // Use parameterized query to prevent SQL injection
-    const values = [hashedPassword];
-    await client.query(insertQuery, values);
+      const insertQuery = `
+        INSERT INTO users (name, email, password, role)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (email) DO NOTHING;
+      `;
 
-    console.log('Admin account "admin" created successfully!');
+      const values = [user.name, user.email, hashedPassword, user.role];
+      await client.query(insertQuery, values);
+      console.log(`User "${user.email}" created successfully.`);
+    }
+
+    console.log("All demo accounts created successfully!");
   } catch (err) {
     console.error("Error creating demo accounts:", err);
   } finally {
