@@ -38,7 +38,7 @@ const App = () => {
   // Set axios token
   useEffect(() => {
     if (token) {
-      axios.defaults.headers.common["Authorization"] = "Bearer ${ token }";
+      axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
       fetchUserInfo();
     }
   }, [token]);
