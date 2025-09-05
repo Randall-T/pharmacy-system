@@ -13,7 +13,7 @@ import Modal from "./components/Modal";
 import "./App.css";
 
 // Configure axios defaults
-axios.defaults.baseURL = process.env.BACKEND_API_URL;
+axios.defaults.baseURL = process.env.REACT_APP_BACKEND_API_URL;
 
 const App = () => {
   const [user, setUser] = useState(null);
