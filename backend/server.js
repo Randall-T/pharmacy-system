@@ -11,7 +11,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // CORS Configuration for production
 app.use(
   cors({
-    origin: ["http://localhost:3000", process.env.FRONTEND_URL],
+    origin: true, // Allow any origin
     credentials: true,
   })
 );
