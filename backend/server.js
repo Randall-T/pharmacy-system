@@ -370,6 +370,43 @@ app.post("/api/sales", authenticateToken, async (req, res) => {
   }
 });
 
+// PURCHASES ROUTES
+app.get(
+  "/api/purchases",
+  authenticateToken,
+  requireRole("manager"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(`
+            SELECT p.*, pr.name as product_name 
+            FROM purchases p 
+            JOIN products pr ON p.product_id = pr.id 
+            ORDER BY p.purchase_date DESC
+        `);
+      res.json(result.rows);
+    } catch (error) {
+      console.error("Error fetching purchases:", error);
+      res.status(500).json({ error: "Database error" });
+    }
+  }
+);
+
+// ORDERS ROUTES
+app.get("/api/orders", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+            SELECT o.*, p.name as product_name 
+            FROM orders o 
+            JOIN products p ON o.product_id = p.id 
+            ORDER BY o.order_date DESC
+        `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
 // DASHBOARD ROUTES
 app.get("/api/dashboard", authenticateToken, async (req, res) => {
   try {
