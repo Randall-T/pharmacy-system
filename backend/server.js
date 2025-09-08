@@ -115,7 +115,7 @@ app.get(
       const result = await pool.query(
         "SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC"
       );
-      res.json(result.rows);
+      res.json(result.rows || []);
     } catch (error) {
       console.error("Error fetching users:", error);
       res.status(500).json({ error: "Database error" });
@@ -383,7 +383,7 @@ app.get(
             JOIN products pr ON p.product_id = pr.id 
             ORDER BY p.purchase_date DESC
         `);
-      res.json(result.rows);
+      res.json(result.rows || []);
     } catch (error) {
       console.error("Error fetching purchases:", error);
       res.status(500).json({ error: "Database error" });
